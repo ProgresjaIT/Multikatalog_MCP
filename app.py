@@ -1,4 +1,5 @@
 """Serwer MCP (stdio) dla API Multikatalogu (opis: API.md)."""
+import functools
 import os
 import re
 from pathlib import Path
@@ -7,6 +8,7 @@ from urllib.parse import quote
 import httpx
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 load_dotenv(Path(__file__).with_name(".env"))
 URL = os.environ["MULTIKATALOG_URL"]
@@ -41,7 +43,21 @@ def _check(r: httpx.Response) -> httpx.Response:
     return r
 
 
+def show_errors(fn):
+    # błąd ze szczegółami wraca jako wynik toola, zamiast gołego "Error executing tool"
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except Exception as e:
+            raise ToolError(f"{type(e).__name__}: {e}") from e
+    return wrapper
+
+
 @mcp.tool()
+@show_errors
 def search_products(query: str, visibility: str = "aktywne") -> dict:
     """Szuka towaru po kodzie (IdoSell: dokładnie cały kod) lub ciągłym fragmencie nazwy (min. 3 znaki).
     visibility: aktywne | ukryte | wszystkie.
@@ -50,12 +66,14 @@ def search_products(query: str, visibility: str = "aktywne") -> dict:
 
 
 @mcp.tool()
+@show_errors
 def list_categories() -> dict:
     """Zwraca kategorie: idosell[] (id do parametru kat) i wlasne[] (id do parametru wkat)."""
     return _check(api.get("/api/kategorie")).json()
 
 
 @mcp.tool()
+@show_errors
 def get_category_products(kat: int | None = None, wkat: int | None = None, visibility: str = "aktywne") -> dict:
     """Wszystkie towary z kategorii. Podaj kat (id kategorii IdoSell) albo wkat (id kategorii własnej).
     Zwraca tytul, liczba, rows (max 5000), columns, obciete, error. Uwaga: wynik może być duży."""
@@ -66,6 +84,7 @@ def get_category_products(kat: int | None = None, wkat: int | None = None, visib
 
 
 @mcp.tool()
+@show_errors
 def export_price_list(rows: list[dict], columns: list[str], fmt: str = "xlsx", thumbnails: bool = False) -> str:
     """Generuje plik (xlsx | csv | xml) z wierszy z search_products / get_category_products.
     columns: nazwy kolumn z pola columns, np. ["Skrot", "Nazwa", "IAI_Cena detaliczna", "KRIS_CenaPLN"].
