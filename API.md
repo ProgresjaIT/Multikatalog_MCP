@@ -116,6 +116,8 @@ curl -H "Authorization: Bearer $API_TOKEN" "https://<host>/api/szukaj?q=SG03808R
 
 Kategorie zaznaczone w panelu w „Wybór kategorii”. Potrzebne tylko do `/api/towary`.
 
+`?wszystkie=true` – wszystkie kategorie sklepu, które mają produkty (`nazwa` = pełna ścieżka, `liczba` = liczba towarów), i wszystkie kategorie własne. `/api/towary` przyjmuje każdą z nich, nie tylko zaznaczone. Błąd IdoSell → `502` z `{"error": "…"}`.
+
 ```json
 {
   "idosell": [{"id": 1214555738, "nazwa": "Altany"}],

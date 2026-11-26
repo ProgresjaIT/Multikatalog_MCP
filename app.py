@@ -30,12 +30,14 @@ mcp = MCPServer(
         "gdy rows puste a kris coś zwraca, szukaj krótkim fragmentem nazwy z kris. "
         "Wyszukuj pojedynczo, nigdy równolegle, frazą 1–2 słów z nazwy. Po timeoucie ponów raz sam, bez pytania. "
         "Zawsze sprawdzaj pole error. Do eksportu podawaj kody (skrot) z wyników wyszukiwania. "
-        "Cały cennik kategorii eksportuj przez export_category, nie przez get_category_products."
+        "Cały cennik: znajdź kategorie przez list_categories(all=True, query=...) i wyeksportuj je jednym "
+        "export_categories, nie przez get_category_products."
     ),
 )
 
 
 _rows: dict[str, dict] = {}  # pełne wiersze z API po skrócie; agent dostaje tylko odchudzone
+MAX_EXPORT = 5000  # limit wierszy /api/eksport
 MAX_VALUE = 200  # dłuższe wartości (opisy, listy zdjęć) to ~95% wagi wiersza, agentowi niepotrzebne
 
 
@@ -86,9 +88,13 @@ def search_products(query: str, visibility: str = "aktywne") -> dict:
 
 @mcp.tool()
 @show_errors
-def list_categories() -> dict:
-    """Zwraca kategorie: idosell[] (id do parametru kat) i wlasne[] (id do parametru wkat)."""
-    return _check(api.get("/api/kategorie")).json()
+def list_categories(all: bool = False, query: str = "") -> dict:
+    """Zwraca kategorie: idosell[] (id do parametru kat) i wlasne[] (id do parametru wkat).
+    all=False: tylko zaznaczone w panelu. all=True: wszystkie kategorie sklepu z produktami (nazwa = pełna ścieżka,
+    liczba = towary) – to ~1300 pozycji, więc zawęź je query (fragment ścieżki, bez wielkości liter, np. "ogrodz")."""
+    data = _check(api.get("/api/kategorie", params={"wszystkie": "true"} if all else None)).json()
+    q = query.strip().lower()
+    return {k: [c for c in v if q in c["nazwa"].lower()] if isinstance(v, list) else v for k, v in data.items()}
 
 
 @mcp.tool()
@@ -96,7 +102,7 @@ def list_categories() -> dict:
 def get_category_products(kat: int | None = None, wkat: int | None = None, visibility: str = "aktywne") -> dict:
     """Wszystkie towary z kategorii. Podaj kat (id kategorii IdoSell) albo wkat (id kategorii własnej).
     Zwraca tytul, liczba, rows (max 5000, odchudzone), columns, obciete, error. Uwaga: wynik może być duży –
-    do eksportu całej kategorii użyj export_category."""
+    do eksportu całych kategorii użyj export_categories."""
     return _slim(_category(kat, wkat, visibility))
 
 
@@ -126,16 +132,32 @@ def export_price_list(codes: list[str], columns: list[str], fmt: str = "xlsx", t
 
 @mcp.tool()
 @show_errors
-def export_category(columns: list[str], kat: int | None = None, wkat: int | None = None,
-                    visibility: str = "aktywne", fmt: str = "xlsx", thumbnails: bool = False) -> dict:
-    """Cały cennik kategorii prosto do pliku w Nextcloudzie – wiersze nie przechodzą przez agenta.
-    Podaj kat (IdoSell) albo wkat (własna) z list_categories. Cały katalog: wołaj kolejno dla każdej kategorii.
-    Zwraca path, liczba (towarów w kategorii), obciete (true = w pliku tylko pierwsze 5000), error."""
-    data = _category(kat, wkat, visibility)
-    if not data["rows"]:
-        return {"path": None, "liczba": 0, "obciete": False, "error": data.get("error") or "Kategoria jest pusta."}
-    return {"path": _export(data["rows"], columns, fmt, thumbnails), "liczba": data["liczba"],
-            "obciete": data["obciete"], "error": data.get("error")}
+def export_categories(columns: list[str], kat: list[int] | None = None, wkat: list[int] | None = None,
+                      visibility: str = "aktywne", fmt: str = "xlsx", thumbnails: bool = False) -> dict:
+    """Cennik z wybranych kategorii w jednym pliku w Nextcloudzie – wiersze nie przechodzą przez agenta.
+    kat: id kategorii IdoSell, wkat: id kategorii własnych (z list_categories, także all=True).
+    Towary z kilku kategorii są scalane bez powtórzeń; ponad 5000 wierszy → kilka plików.
+    Każda kategoria to osobne pobranie (kilka–kilkanaście s), więc wybieraj tylko potrzebne.
+    Zwraca paths, liczba (wierszy w plikach), obciete (kategorie ucięte do 5000), errors."""
+    targets = [(k, None) for k in kat or []] + [(None, w) for w in wkat or []]
+    if not targets:
+        raise ValueError("Podaj co najmniej jedną kategorię w kat albo wkat.")
+    rows, seen, obciete, errors = [], set(), [], []
+    for k, w in targets:
+        data = _category(k, w, visibility)
+        if data.get("error"):
+            errors.append(f"{'kat' if k else 'wkat'} {k or w}: {data['error']}")
+        if data["obciete"]:
+            obciete.append(k or w)
+        for row in data["rows"]:
+            key = row["skrot"] or row["values"].get("IAI_ProductId") or id(row)  # towar bywa w kilku kategoriach
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+    if not rows:
+        return {"paths": [], "liczba": 0, "obciete": obciete, "errors": errors or ["Wybrane kategorie są puste."]}
+    paths = [_export(rows[i:i + MAX_EXPORT], columns, fmt, thumbnails) for i in range(0, len(rows), MAX_EXPORT)]
+    return {"paths": paths, "liczba": len(rows), "obciete": obciete, "errors": errors}
 
 
 def _export(rows: list[dict], columns: list[str], fmt: str, thumbnails: bool) -> str:
