@@ -6,10 +6,11 @@ Serwer MCP (stdio) do API Multikatalogu: szukanie towarów, kategorie i eksport 
 
 | Narzędzie | Co robi |
 |---|---|
-| `search_products(query, visibility)` | szuka po pełnym kodzie lub fragmencie nazwy (min. 3 znaki); zwraca `rows` (do eksportu) i `kris` (ceny KRIS) |
+| `search_products(query, visibility)` | szuka po pełnym kodzie lub fragmencie nazwy (min. 3 znaki); zwraca `rows` (odchudzone, bez długich opisów) i `kris` (ceny KRIS) |
 | `list_categories()` | kategorie IdoSell (`kat`) i własne (`wkat`) |
 | `get_category_products(kat \| wkat, visibility)` | wszystkie towary z kategorii (max 5000) |
-| `export_price_list(rows, columns, fmt, thumbnails)` | generuje xlsx/csv/xml, zapisuje w Nextcloudzie i zwraca ścieżkę, np. `Cenniki/Towary_20261125_1111.xlsx` |
+| `export_price_list(codes, columns, fmt, thumbnails, changes)` | generuje xlsx/csv/xml z wcześniej znalezionych kodów, zapisuje w Nextcloudzie i zwraca ścieżkę, np. `Cenniki/Towary_20261125_1111.xlsx` |
+| `export_category(columns, kat \| wkat, visibility, fmt, thumbnails)` | cały cennik kategorii prosto do pliku w Nextcloudzie (wiersze nie przechodzą przez agenta) |
 
 `visibility`: `aktywne` (domyślnie) | `ukryte` | `wszystkie`.
 
