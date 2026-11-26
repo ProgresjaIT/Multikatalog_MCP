@@ -10,7 +10,7 @@ Serwer MCP (stdio) do API Multikatalogu: szukanie towarów, kategorie i eksport 
 | `list_categories(all, query)` | kategorie IdoSell (`kat`) i własne (`wkat`); domyślnie zaznaczone w panelu, `all=True` – wszystkie z produktami, `query` filtruje po ścieżce |
 | `get_category_products(kat \| wkat, visibility)` | wszystkie towary z kategorii (max 5000) |
 | `export_price_list(codes, columns, fmt, thumbnails, changes)` | generuje xlsx/csv/xml z wcześniej znalezionych kodów, zapisuje w Nextcloudzie i zwraca ścieżkę, np. `Cenniki/Towary_20261125_1111.xlsx` |
-| `export_categories(columns, kat[], wkat[], visibility, fmt, thumbnails)` | cennik z wybranych kategorii w jednym pliku w Nextcloudzie (scalony bez powtórzeń, >5000 wierszy → kilka plików; wiersze nie przechodzą przez agenta) |
+| `export_categories(columns, queries[], kat[], wkat[], visibility, fmt, thumbnails)` | cennik z kategorii pasujących do nazw działów (`queries`) lub z podanych id w jednym pliku w Nextcloudzie (scalony bez powtórzeń, >5000 wierszy → kilka plików; wiersze nie przechodzą przez agenta) |
 
 `visibility`: `aktywne` (domyślnie) | `ukryte` | `wszystkie`.
 

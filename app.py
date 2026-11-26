@@ -30,8 +30,9 @@ mcp = MCPServer(
         "gdy rows puste a kris coś zwraca, szukaj krótkim fragmentem nazwy z kris. "
         "Wyszukuj pojedynczo, nigdy równolegle, frazą 1–2 słów z nazwy. Po timeoucie ponów raz sam, bez pytania. "
         "Zawsze sprawdzaj pole error. Do eksportu podawaj kody (skrot) z wyników wyszukiwania. "
-        "Cały cennik: znajdź kategorie przez list_categories(all=True, query=...) i wyeksportuj je jednym "
-        "export_categories, nie przez get_category_products."
+        "Cały cennik: wywołaj raz export_categories(queries=[...]) z nazwami głównych działów (z prompta lub maila); "
+        "jeśli któraś fraza ma 0 kategorii, sprawdź nazwy przez list_categories(all=True, query=...). "
+        "Nie używaj do tego get_category_products."
     ),
 )
 
@@ -132,16 +133,29 @@ def export_price_list(codes: list[str], columns: list[str], fmt: str = "xlsx", t
 
 @mcp.tool()
 @show_errors
-def export_categories(columns: list[str], kat: list[int] | None = None, wkat: list[int] | None = None,
-                      visibility: str = "aktywne", fmt: str = "xlsx", thumbnails: bool = False) -> dict:
+def export_categories(columns: list[str], queries: list[str] | None = None, kat: list[int] | None = None,
+                      wkat: list[int] | None = None, visibility: str = "aktywne", fmt: str = "xlsx",
+                      thumbnails: bool = False) -> dict:
     """Cennik z wybranych kategorii w jednym pliku w Nextcloudzie – wiersze nie przechodzą przez agenta.
-    kat: id kategorii IdoSell, wkat: id kategorii własnych (z list_categories, także all=True).
+    queries: nazwy działów, np. ["technorattan", "ogrodzenia"] – bierze wszystkie kategorie (IdoSell i własne),
+    których ścieżka zawiera frazę, razem z podkategoriami. kat / wkat: konkretne id z list_categories.
     Towary z kilku kategorii są scalane bez powtórzeń; ponad 5000 wierszy → kilka plików.
     Każda kategoria to osobne pobranie (kilka–kilkanaście s), więc wybieraj tylko potrzebne.
-    Zwraca paths, liczba (wierszy w plikach), obciete (kategorie ucięte do 5000), errors."""
-    targets = [(k, None) for k in kat or []] + [(None, w) for w in wkat or []]
+    Zwraca paths, liczba (wierszy w plikach), dopasowane (ile kategorii dała każda fraza), obciete
+    (kategorie ucięte do 5000), errors."""
+    kat, wkat, dopasowane = list(kat or []), list(wkat or []), {}
+    if queries:
+        cats = list_categories(all=True)
+        for q in queries:
+            found = {g: [c["id"] for c in cats.get(g, []) if q.strip().lower() in c["nazwa"].lower()]
+                     for g in ("idosell", "wlasne")}
+            kat += found["idosell"]
+            wkat += found["wlasne"]
+            dopasowane[q] = len(found["idosell"]) + len(found["wlasne"])
+    targets = [(k, None) for k in dict.fromkeys(kat)] + [(None, w) for w in dict.fromkeys(wkat)]
     if not targets:
-        raise ValueError("Podaj co najmniej jedną kategorię w kat albo wkat.")
+        raise ValueError(f"Brak kategorii do eksportu (dopasowania fraz: {dopasowane}). Sprawdź nazwy przez "
+                         "list_categories(all=True, query=...) albo podaj kat / wkat.")
     rows, seen, obciete, errors = [], set(), [], []
     for k, w in targets:
         data = _category(k, w, visibility)
@@ -155,9 +169,10 @@ def export_categories(columns: list[str], kat: list[int] | None = None, wkat: li
                 seen.add(key)
                 rows.append(row)
     if not rows:
-        return {"paths": [], "liczba": 0, "obciete": obciete, "errors": errors or ["Wybrane kategorie są puste."]}
+        return {"paths": [], "liczba": 0, "dopasowane": dopasowane, "obciete": obciete,
+                "errors": errors or ["Wybrane kategorie są puste."]}
     paths = [_export(rows[i:i + MAX_EXPORT], columns, fmt, thumbnails) for i in range(0, len(rows), MAX_EXPORT)]
-    return {"paths": paths, "liczba": len(rows), "obciete": obciete, "errors": errors}
+    return {"paths": paths, "liczba": len(rows), "dopasowane": dopasowane, "obciete": obciete, "errors": errors}
 
 
 def _export(rows: list[dict], columns: list[str], fmt: str, thumbnails: bool) -> str:
