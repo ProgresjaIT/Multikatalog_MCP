@@ -14,6 +14,7 @@ load_dotenv(Path(__file__).with_name(".env"))
 URL = os.environ["MULTIKATALOG_URL"]
 TOKEN = os.environ["API_TOKEN"]
 NC_DIR = os.environ.get("NEXTCLOUD_DIR", "Cenniki").strip("/")
+SHARED_DIR = os.environ.get("SHARED_DIR", "")  # folder współdzielony z mail-mcp (mcp_loader montuje go jako /shared)
 
 nc = httpx.Client(
     base_url=f"{os.environ['NEXTCLOUD_URL'].rstrip('/')}/remote.php/dav/files/{quote(os.environ['NEXTCLOUD_USER'])}/",
@@ -32,7 +33,8 @@ mcp = MCPServer(
         "Zawsze sprawdzaj pole error. Do eksportu podawaj kody (skrot) z wyników wyszukiwania. "
         "Cały cennik: wywołaj raz export_categories(queries=[...]) z nazwami głównych działów (z prompta lub maila); "
         "jeśli któraś fraza ma 0 kategorii, sprawdź nazwy przez list_categories(all=True, query=...). "
-        "Nie używaj do tego get_category_products."
+        "Nie używaj do tego get_category_products. "
+        "Plik do załącznika maila: local_path / local_paths z wyniku eksportu – podaj je mail-mcp, nie pobieraj pliku."
     ),
 )
 
@@ -117,18 +119,19 @@ def _category(kat: int | None, wkat: int | None, visibility: str) -> dict:
 @mcp.tool()
 @show_errors
 def export_price_list(codes: list[str], columns: list[str], fmt: str = "xlsx", thumbnails: bool = False,
-                      changes: dict[str, dict[str, str]] | None = None) -> str:
+                      changes: dict[str, dict[str, str]] | None = None) -> dict:
     """Generuje plik (xlsx | csv | xml) z towarów znalezionych wcześniej przez search_products / get_category_products.
     codes: kody (skrot) z rows, w kolejności wierszy pliku.
     columns: nazwy kolumn z pola columns, np. ["Skrot", "Nazwa", "IAI_Cena detaliczna", "KRIS_CenaPLN"].
     changes: opcjonalne zmiany wartości przed eksportem, np. {"SG03808": {"IAI_Cena detaliczna": "7900"}}.
     Kolumny "Param: …" z plikami dają ZIP.
-    Plik trafia do Nextclouda; zwraca jego ścieżkę w Nextcloudzie (np. "Cenniki/Towary_20261125_1048.xlsx")."""
+    Plik trafia do Nextclouda. Zwraca path (ścieżka w Nextcloudzie) i local_path (plik do załącznika w mail-mcp)."""
     if missing := [c for c in codes if c not in _rows]:
         raise ValueError(f"Nieznane kody (najpierw wyszukaj je search_products): {', '.join(missing)}")
     changes = changes or {}
     rows = [{**_rows[c], "values": {**_rows[c]["values"], **changes.get(c, {})}} for c in codes]
-    return _export(rows, columns, fmt, thumbnails)
+    nc_path, local_path = _export(rows, columns, fmt, thumbnails)
+    return {"path": nc_path, "local_path": local_path}
 
 
 @mcp.tool()
@@ -141,7 +144,7 @@ def export_categories(columns: list[str], queries: list[str] | None = None, kat:
     których ścieżka zawiera frazę, razem z podkategoriami. kat / wkat: konkretne id z list_categories.
     Towary z kilku kategorii są scalane bez powtórzeń; ponad 5000 wierszy → kilka plików.
     Każda kategoria to osobne pobranie (kilka–kilkanaście s), więc wybieraj tylko potrzebne.
-    Zwraca paths, liczba (wierszy w plikach), dopasowane (ile kategorii dała każda fraza), obciete
+    Zwraca paths (Nextcloud), local_paths (pliki do załącznika w mail-mcp), liczba (wierszy w plikach), dopasowane (ile kategorii dała każda fraza), obciete
     (kategorie ucięte do 5000), errors."""
     kat, wkat, dopasowane = list(kat or []), list(wkat or []), {}
     if queries:
@@ -171,11 +174,14 @@ def export_categories(columns: list[str], queries: list[str] | None = None, kat:
     if not rows:
         return {"paths": [], "liczba": 0, "dopasowane": dopasowane, "obciete": obciete,
                 "errors": errors or ["Wybrane kategorie są puste."]}
-    paths = [_export(rows[i:i + MAX_EXPORT], columns, fmt, thumbnails) for i in range(0, len(rows), MAX_EXPORT)]
-    return {"paths": paths, "liczba": len(rows), "dopasowane": dopasowane, "obciete": obciete, "errors": errors}
+    files = [_export(rows[i:i + MAX_EXPORT], columns, fmt, thumbnails) for i in range(0, len(rows), MAX_EXPORT)]
+    paths, local_paths = [f[0] for f in files], [f[1] for f in files]
+    return {"paths": paths, "local_paths": local_paths, "liczba": len(rows), "dopasowane": dopasowane,
+            "obciete": obciete, "errors": errors}
 
 
-def _export(rows: list[dict], columns: list[str], fmt: str, thumbnails: bool) -> str:
+def _export(rows: list[dict], columns: list[str], fmt: str, thumbnails: bool) -> tuple[str, str | None]:
+    """(ścieżka w Nextcloudzie, ścieżka lokalna w SHARED_DIR albo None)."""
     r = _check(api.post("/api/eksport", json={"rows": rows, "columns": columns, "fmt": fmt, "thumbnails": thumbnails}))
     m = re.search(r'filename="?([^";]+)', r.headers.get("content-disposition", ""))
     name = Path(m.group(1) if m else f"eksport.{fmt}").name  # .name: nie ufamy ścieżce z nagłówka
@@ -190,7 +196,23 @@ def _export(rows: list[dict], columns: list[str], fmt: str, thumbnails: bool) ->
             break
     if up.status_code not in (201, 204):
         raise RuntimeError(f"Nextcloud: zapis {nc_path} nie powiódł się (HTTP {up.status_code})")
-    return nc_path
+    return nc_path, _save_shared(Path(nc_path).name, r.content)
+
+
+def _save_shared(name: str, content: bytes) -> str | None:
+    # kopia dla mail-mcp: plik idzie do załącznika z dysku, nie przez rozmowę z agentem
+    if not SHARED_DIR:
+        return None
+    stem, ext = Path(name).stem, Path(name).suffix
+    for i in range(1, 100):
+        path = Path(SHARED_DIR) / (name if i == 1 else f"{stem}_{i}{ext}")
+        try:
+            with open(path, "xb") as f:  # "x": nigdy nie nadpisuje istniejącego pliku
+                f.write(content)
+            return str(path)
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"Nie można zapisać {name} w {SHARED_DIR}: za dużo plików o tej nazwie")
 
 
 if __name__ == "__main__":
